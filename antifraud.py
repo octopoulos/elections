@@ -9,6 +9,7 @@ Antifraud
 from collections import Counter
 import csv
 from datetime import datetime
+import json
 from logging import getLogger
 from math import log10
 import os
@@ -370,19 +371,22 @@ class Antifraud:
             return
 
         data = rematch.group(1)
+        dico = None
         try:
-            json = json.loads(data)
-            if isinstance(json, dict):
-                races = json.get('races')
+            dico = json.loads(data)
+            if isinstance(dico, dict):
+                races = dico.get('races')
                 if races:
-                    json = races
+                    dico = races
         except Exception as e:
             self.logger.warning({'status': 'convert_file__json_error', 'error': e, 'filename': filename})
             return
 
+        if not dico:
+            return
         base, ext = os.path.splitext(filename)
         output = f'{base}-html.json'
-        save_json_file(output, json, indent=2, sort=True)
+        save_json_file(output, dico, indent=2, sort=True)
 
     def convert_folder(self):
         """Convert HTML to JSON
