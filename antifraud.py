@@ -1,6 +1,6 @@
 # coding: utf-8
 # @author octopoulo <polluxyz@gmail.com>
-# @version 2020-11-12
+# @version 2020-11-13
 
 """
 Antifraud
@@ -61,8 +61,9 @@ PARTIES = {
     'republican': 1,
 }
 
-MIN_COUNTS = [0, 240, 270]
-TIME_STEP = 250
+MIN_COUNTS = [136, 270, 300]
+SCORE_DOUBT = 0.7
+TIMESTEP = 300
 
 RE_SCRIPT_2012 = re.compile(r'data: (\{.+\})')
 RE_SCRIPT_2016 = re.compile(r'eln_races = (.+),')
@@ -118,19 +119,19 @@ class Antifraud:
 
             for digit in range(1, 3):
                 for j, indices in enumerate([[0], [1], [2], [0, 1, 2]]):
-                    total, chi, score, firsts, enough = self.calculate_fraud(digit, counties, indices)
+                    total, chi, score, firsts, enough, enough2 = self.calculate_fraud(digit, counties, indices)
                     self.log(
                         f"CN {i:2} {digit} {str(indices).replace(', ', ''):5} {state_id} {total:3} {chi:6.2f}"
-                        f" {str(score):5} {'FRAUD' if score > 0.9 and enough else '     '}"
-                        f" {' ' if enough else 'X'} {firsts}")
+                        f" {str(score):5} {self.get_fraud(score, enough, enough2, 'X')} {firsts}")
                     if not enough:
                         continue
+                    ichi = int(chi * 100) / 100
                     if score:
                         frauds[j] |= 1
                         if score > fraud_scores[0]:
-                            fraud_chis[digit - 1] = chi
-                            fraud_scores[digit - 1] = score
-                    fraud_data.append([0, digit, indices, total, int(chi * 100) / 100, score, firsts])
+                            fraud_chis[digit - 1] = ichi
+                            fraud_scores[digit - 1] = int(score * 100) / 100
+                    fraud_data.append([0, digit, indices, total, ichi, score, firsts])
 
             self.calculate_score(cands, fraud_data)
 
@@ -166,35 +167,97 @@ class Antifraud:
 
             for digit in range(1, 3):
                 for indices in [[0], [1], [3]]:
-                    total, chi, score, firsts, enough = self.calculate_fraud(digit, deltas, indices)
+                    total, chi, score, firsts, enough, enough2 = self.calculate_fraud(digit, deltas, indices)
                     self.log(
                         f"TS {i:2} {digit} {str(indices):5} {state_id} {total:3} {chi:6.2f} {str(score):5}"
-                        f" {'FRAUD' if score > 0.9 and enough else '     '} {' ' if enough else 'X'} {firsts}")
+                        f" {self.get_fraud(score, enough, enough2, 'X')} {firsts}")
                     if not enough:
                         continue
+                    ichi = int(chi * 100) / 100
                     if score:
                         frauds[indices[0]] |= 2
                         if score > fraud_scores[1]:
-                            fraud_chis[digit + 1] = chi
-                            fraud_scores[digit + 1] = score
-                    fraud_data.append([1, digit, indices, total, int(chi * 100) / 100, score, firsts])
+                            fraud_chis[digit + 1] = ichi
+                            fraud_scores[digit + 1] = int(score * 100) / 100
+                    fraud_data.append([1, digit, indices, total, ichi, score, firsts])
 
                     # fraud detected => try to isolate the time with a sliding window
-                    if score and enough:
-                        length = len(deltas)
-                        start = 0
-                        while start < length - TIME_STEP:
-                            total, chi, score, firsts, enough = \
-                                self.calculate_fraud(digit, deltas[start: start + 180], indices)
+                    # - find worst case = high number surrounded by high numbers too
+                    if score < SCORE_DOUBT or not enough:
+                        continue
+                    length = len(deltas)
+                    if length < TIMESTEP * 1.3:
+                        continue
+
+                    best = 0
+                    betas = []
+
+                    for steps in range(2, 4):
+                        alphas = []
+                        highest = -1
+                        interval = length / steps
+                        lowest = 101
+                        min_count = MIN_COUNTS[digit]
+                        delta = min_count - interval
+
+                        for i in range(steps):
+                            # interval
+                            start = i * interval
+                            end = start + interval
+                            if delta > 0:
+                                start -= delta / 2
+                                end += delta / 2
+                            if start < 0:
+                                end -= start
+                                start = 0
+                            if end > length:
+                                start += length - end
+                                end = length
+                            start = int(start)
+                            end = int(end + 0.5)
+
+                            # fraud
+                            # increase the interval if total is too low
+                            while 1:
+                                total, chi, score, firsts, enough, enough2 = \
+                                    self.calculate_fraud(digit, deltas[start: end], indices)
+                                if total < min_count and (start > 0 or end < length):
+                                    if start > 0:
+                                        start -= 1
+                                    if end < length:
+                                        end += 1
+                                else:
+                                    break
+
+                            if score > highest:
+                                highest = score
+                            if score < lowest:
+                                lowest = score
+
                             first = deltas[start]
-                            last = deltas[start + TIME_STEP - 1]
+                            last = deltas[end - 1]
                             time_start = int(datetime.fromisoformat(first[4].replace('Z', '+00:00')).timestamp())
                             time_end = int(datetime.fromisoformat(last[4].replace('Z', '+00:00')).timestamp())
-                            self.log(
-                                f"      {digit}  {start:3}-{start + TIME_STEP:3} {total:3} {chi:6.2f} {str(score):5}"
-                                f" {'FRAUD' if score > 0.9 else '     '} {' ' if enough else '.'} {str(firsts):48}"
-                                f" {time_start} -> {time_end} {first[5]}-> {last[5]}")
-                            start += 10
+                            alphas.append([
+                                3, digit, indices, total, ichi, score, firsts, start, end, time_start, time_end])
+
+                        if highest < best * 1.02:
+                            break
+                        if highest > best:
+                            best = highest
+                        # not much difference between highest & lowest => not interesting
+                        if highest > lowest + 0.15:
+                            betas = alphas[:]
+
+                    # show results
+                    for _, _, _, total, ichi, score, firsts, start, end, time_start, time_end in betas:
+                        self.log(
+                            f"      {digit}  {start:3}-{end:3} {total:3} {chi:6.2f} {str(score):5}"
+                            f" {self.get_fraud(score, enough, enough2, '.')} {str(firsts):48}"
+                            f" {time_start} -> {time_end} {first[5]}-> {last[5]}")
+
+                    if best >= 0.9:
+                        fraud_data.extend(betas)
 
             self.calculate_score(cands, fraud_data)
 
@@ -221,7 +284,7 @@ class Antifraud:
             benford_id: int,        # 1 or 2
             data: List[int],
             indices: List[int],     # data[index]
-        ) -> Tuple[int, float, float, List[int], bool]:
+        ) -> Tuple[int, float, float, List[int], bool, bool]:
         """Calculate the probability to have a fraud
         """
         benfords = BENFORDS[benford_id]
@@ -254,32 +317,38 @@ class Antifraud:
             if chi > square:
                 score = xscore
 
-        # need enough data, magic number = 30, but let's do 25
+        # need enough data, magic number = 30
         enough = total >= 17 * num_digit
+        enough2 = total >= 27 * num_digit
         if score and enough and False:
             print(counts)
             print(expects)
-        return total, chi, score, counts, enough
+        return total, chi, score, counts, enough, enough2
 
     def calculate_score(self, cands: List[Any], data: List[Any]):
         """Calculate the final fraud score for presentation (colors)
         cands: [0, digit, indices, total, int(chi * 100) / 100, score, firsts]
         """
+        alphas = [item for item in data if item[3] >= MIN_COUNTS[item[1]]]
+        alphas = sorted(alphas, key=lambda x: x[5], reverse=True)
+
         best = 0
         count = 0
         total = 0
-        for item in data:
-            number = item[3]
-            score = item[5]
-            if not score:
-                continue
 
-            total += number * score
-            count += number
-            if score > best and number >= MIN_COUNTS[item[1]]:
-                best = score
+        if len(alphas):
+            alpha = alphas[0]
+            count += alpha[3]
+            best = alpha[5]
+            total = count * best
 
-        score = total / (160 + count) if count else 0
+            if len(alphas) > 1:
+                beta = alphas[1]
+                if beta[5] > best * 0.9:
+                    count += beta[3]
+                    total += beta[3] * beta[5]
+
+        score = total / (120 + count) if count else 0
         cands[8] = best
         cands[11] = int(score * 100) / 100
 
@@ -411,6 +480,17 @@ class Antifraud:
         output = os.path.join(DATA_FOLDER, f'2020-president-data.json')
         print(f'downloaded {len(res.text)} bytes to {output}')
         write_text_safe(output, res.text)
+
+    def get_fraud(self, score: float, enough: bool, enough2: bool, marker: str) -> str:
+        """Get a FRAUD text
+        """
+        if score > 0.9 and enough:
+            fraud = 'FRAUD'
+            if not enough2:
+                fraud = fraud.lower()
+        else:
+            fraud = '     '
+        return f"{fraud} {' ' if enough2 else marker}"
 
     def go(self):
         """Go!
