@@ -1,6 +1,6 @@
 # coding: utf-8
 # @author octopoulo <polluxyz@gmail.com>
-# @version 2020-11-12
+# @version 2020-11-17
 
 """
 Main
@@ -17,6 +17,7 @@ def main():
     add = parser.add_argument
 
     add('--convert', action='store_true', help='convert html to json')
+    add('--covid', action='store_true', help='get covid data')
     add('--download', nargs='?', default='', const='nytimes', help='download new data', choices=['nytimes'])
     add('--file', nargs='?', help='input filename, ex: 2020-president-data.json')
     add('--pa', action='store_true', help='count data from Pennsylvania')
@@ -32,8 +33,10 @@ def main():
     antifraud.initialise()
     if args.convert:
         antifraud.convert_folder()
+    elif args.covid:
+        antifraud.download_covid()
     elif args.download:
-        antifraud.download_json()
+        antifraud.download_president()
     elif args.pa:
         antifraud.pennsylvania()
     else:
