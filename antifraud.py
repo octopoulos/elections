@@ -1,6 +1,6 @@
 # coding: utf-8
 # @author octopoulo <polluxyz@gmail.com>
-# @version 2020-11-17
+# @version 2020-11-19
 
 """
 Antifraud
@@ -115,7 +115,7 @@ class Antifraud:
         filename = self.file
         if not filename:
             if year == 2020:
-                for suffix in ('-1519', ''):
+                for suffix in ('-1923', ''):
                     filename = os.path.join(DATA_FOLDER, f'{year}-president-data{suffix}.json')
                     if os.path.isfile(filename):
                         break
@@ -379,7 +379,7 @@ class Antifraud:
 
         if len(alphas):
             alpha = alphas[0]
-            count += alpha[3]
+            count += alpha[3] * 1.2
             best = alpha[5]
             total = count * best
 
@@ -570,12 +570,12 @@ class Antifraud:
             fraud_scores = cands[10]
             frauds = cands[12]
             fraud_data = cands[13]
+            code = country[1].lower()
 
             for digit in (1, 2):
                 total, chi, score, firsts, enough, enough2 = self.calculate_fraud(digit, covid_cases[0], [-1])
-                self.log(
-                    f"{country[1]} {country[5]:3} {digit} 2 {total:3} {chi:6.2f}"
-                    f" {str(score):5} {self.get_fraud(score, enough, enough2, 'X')} {firsts}")
+                text = self.get_fraud(score, enough, enough2, 'X')
+                self.log(f"{code:3} {digit} 2 {total:3} {chi:6.2f} {str(score):5} {text} {firsts}")
                 ichi = int(chi * 100) / 100
                 if score:
                     frauds[3] |= 1
@@ -585,7 +585,7 @@ class Antifraud:
                 fraud_data.append([0, digit, [2], total, ichi, score, firsts])
 
             self.calculate_score(cands, fraud_data)
-            stats[country[5]] = cands
+            stats[code] = cands
 
         # 3) totals
         total = [0] * 9
@@ -649,11 +649,10 @@ class Antifraud:
         with open(filename, newline='') as csvfile:
             spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
             for row in spamreader:
-                code = row[5]
-                if code.isdigit():
-                    self.countries[code] = row
-                    self.countries[row[0].lower()] = row
-                    names[code] = row[0]
+                code = row[1].lower()
+                self.countries[code] = row
+                self.countries[row[0].lower()] = row
+                names[code] = row[0]
 
     def log(self, text: str):
         """Log on console + file
