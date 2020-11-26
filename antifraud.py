@@ -1,6 +1,6 @@
 # coding: utf-8
 # @author octopoulo <polluxyz@gmail.com>
-# @version 2020-11-24
+# @version 2020-11-25
 
 """
 Antifraud
@@ -183,8 +183,9 @@ class Antifraud:
 
             for digit in (1, 2):
                 for indices in [[0], [1], [3]]:
+                    indices2 = indices if indices[0] != 3 else [2]
                     total, chi, score, firsts, enough, enough2 = \
-                        self.calculate_fraud(digit, series, indices, subtract=True)
+                        self.calculate_fraud(digit, series, indices2, minmax=indices[0] != 3, subtract=True)
                     self.log(
                         f"TS {i:2} {digit} {str(indices):5} {state_id} {total:3} {chi:6.2f} {str(score):5}"
                         f" {self.get_fraud(score, enough, enough2, 'X')} {firsts}")
@@ -254,13 +255,13 @@ class Antifraud:
                             # first date is wrong => get the second one
                             first = series[start]
                             second = series[start + 1]
-                            second_date = second[4]
-                            first_date = min(first[4], second[4])
+                            second_date = second[7]
+                            first_date = min(first[7], second[7])
 
                             last = series[end - 1]
                             alphas.append([
                                 3, digit, indices, total, int(chi * 100) / 100, score, firsts, start, end, first_date,
-                                last[4], [first[0][0], first[1][0]], [last[0][0], last[1][0]]])
+                                last[7], [first[0], first[3]], [last[0], last[3]]])
 
                         if highest < best * 1.02:
                             break
@@ -307,6 +308,7 @@ class Antifraud:
             benford_id: int,                    # 1 or 2
             data: List[int] or List[Any],
             indices: List[int],                 # data[index]
+            minmax: bool=False,                 # [value1, min1, max1, value2, min2, max2, count]
             subtract: bool=False,
         ) -> Tuple[int, float, float, List[int], bool, bool]:
         """Calculate the probability to have a fraud
@@ -316,18 +318,21 @@ class Antifraud:
 
         # 1) get the 1st and 2nd digits
         counts = Counter()
+        prev = [0, 0, 0, 0, 0, 0, 0, 0]
+        step = 3 if minmax else 1
         total = 0
-        prev = [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], 0]
+
         for datum in data:
             for index in indices:
-                item = datum[index] if index >= 0 else datum
+                item = datum[index * step] if index >= 0 else datum
                 # subtract => handle ranges
                 if subtract:
-                    a = prev[index] if index >= 0 else prev
-                    if isinstance(a, list):
-                        d0 = item[0] - a[0]
-                        dmin = item[1] - a[1]
-                        dmax = item[2] - a[2]
+                    if minmax:
+                        offset = index * step
+                        a = prev
+                        d0 = datum[offset] - a[offset]
+                        dmin = datum[offset + 1] - a[offset + 1]
+                        dmax = datum[offset + 2] - a[offset + 2]
                         if d0 < 1 or dmin < 1 or dmax < 1:
                             continue
                         item = 0
@@ -339,6 +344,7 @@ class Antifraud:
                                 continue
                             item = d0
                     else:
+                        a = prev[index * step] if index >= 0 else prev
                         item -= a
 
                 # delta ready
@@ -475,6 +481,7 @@ class Antifraud:
         series = []
 
         # 1) collect all the shares
+        # + create initial windows
         for i, serie in enumerate(timeseries):
             is_last = (i == num_serie - 1)
             shares = serie.get('vote_shares')
@@ -530,46 +537,59 @@ class Antifraud:
                 if a3:
                     a[4] = int(a[0] / a3 * 1e6) / 1e6
 
-            if state_id == 'NY':
-                print(state_id, i, serie, delta)
-
-            if delta < 0:
-                if state_id == 'NY':
-                    print('!!', delta)
-
             last = serie
             i -= 1
 
         # 3) clean series
-        for serie in series:
-            serie[0] = serie[0][:3]
-            serie[1] = serie[1][:3]
-            serie[2] = serie[2][:3]
+        for i, serie in enumerate(series):
+            a = serie[0]
+            b = serie[1]
+            series[i] = [a[0], a[1], a[2], b[0], b[1], b[2], serie[3], serie[4]]
 
         return series
 
-    def compare_series(self):
+    def compare_all_series(self):
         """Compare time series between president + senate
         """
-        print('compare_series', len(self.states))
         if len(self.states) < 2:
             return
-        s1 = self.states[0].get('NY')[17]
-        # s2 = self.states[1].get('PA')[17]
-        errors = 0
-        for i, s in enumerate(s1):
-            if i < 10:
-                continue
-            a = s1[i - 1]
-            if s[3] < a[3]:
-                continue
-            # delta0 = s[0] - a[0]
-            # delta1 = s[1] - a[1]
-            # delta2 = s[2] - a[2]
-            # if (delta0 > 10000 and delta0 > delta1 * 10) or (delta1 > 10000 and delta1 > delta0 * 10):
-            #     print(i, delta0 / (delta1 + 1), delta0, delta1, delta2)
-            # if delta0 < 0 or delta1 < 0 or delta2 < 0:
-            #     print(i, delta1, s)
+
+        keys = [key for key in self.states[0] if key != '00' and key in self.states[1]]
+        for key in keys:
+            self.compare_series(key)
+            # break
+
+    def compare_series(self, state_id: str):
+        """Compare 2 series
+        """
+        s1 = self.states[0][state_id][17]
+        s2 = self.states[1][state_id][17]
+        s3 = []
+        num1 = len(s1)
+        num2 = len(s2)
+
+        # 1) align s2 with s1
+        i = 0
+        j = 0
+        while i < num1:
+            # print(i, ' ', s1[i])
+            cur = s1[i][7]
+            if i + 1 < num1:
+                nxt = s1[i + 1][7]
+            else:
+                nxt = 0
+
+            while j < num2:
+                t2 = s2[j][7]
+                if abs(t2 - cur) > abs(t2 - nxt):
+                    break
+                # print(' ', j, s2[j], t2 - cur, t2 - nxt)
+                j += 1
+
+            s3.append(s2[j if j < num2 else num2 - 1])
+            i += 1
+
+        self.states[1][state_id][17] = s3
 
     def convert_file(self, filename: str):
         """Convert an HTML to JSON
@@ -769,7 +789,7 @@ class Antifraud:
         print(f'Go {year}')
         self.analyse_year(year, 0)
         self.analyse_year(year, 1)
-        self.compare_series()
+        self.compare_all_series()
 
         # save json
         output = os.path.join(DATA_FOLDER, f'{year}.json')
