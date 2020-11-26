@@ -1,6 +1,6 @@
 # coding: utf-8
 # @author octopoulo <polluxyz@gmail.com>
-# @version 2020-11-11
+# @version 2020-11-24
 
 """
 Common functions
@@ -13,6 +13,16 @@ import os
 from platform import system
 import re
 from typing import Any
+
+
+def clamp(number: int or float, low: int or float, high: int or float) -> int or float:
+    """Clamp a number
+    """
+    if number < low:
+        return low
+    if number > high:
+        return high
+    return number
 
 
 def makedirs_safe(folder: str) -> bool:
