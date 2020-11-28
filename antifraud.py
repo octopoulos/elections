@@ -1,6 +1,6 @@
 # coding: utf-8
 # @author octopoulo <polluxyz@gmail.com>
-# @version 2020-11-25
+# @version 2020-11-27
 
 """
 Antifraud
@@ -88,7 +88,7 @@ PARTIES = {
 ENOUGHS = [0, 17, 27]
 MIN_COUNTS = [136, 270, 300]
 PRINT_LOG = False
-SCORE_DOUBT = 0.7
+SCORE_DOUBT = 0.5
 TIMESTEP = 300
 WHICH_NAMES = ['president', 'senate']
 
@@ -157,7 +157,7 @@ class Antifraud:
             fraud_data = cands[13]
 
             for digit in (1, 2):
-                for j, indices in enumerate([[0], [1], [2], [0, 1, 2]]):
+                for j, indices in enumerate(([0], [1], [2], [0, 1, 2])):
                     total, chi, score, firsts, enough, enough2 = self.calculate_fraud(digit, counties, indices)
                     self.log(
                         f"CN {i:2} {digit} {str(indices).replace(', ', ''):5} {state_id} {total:3} {chi:6.2f}"
@@ -172,7 +172,7 @@ class Antifraud:
                             fraud_scores[digit - 1] = int(score * 100) / 100
                     fraud_data.append([0, digit, indices, total, ichi, score, firsts])
 
-            self.calculate_score(cands, fraud_data)
+            self.calculate_score(state_id, cands, fraud_data)
 
             # b) timeseries
             timeseries = state.get('timeseries')
@@ -182,10 +182,12 @@ class Antifraud:
             cands[17] = series
 
             for digit in (1, 2):
-                for indices in [[0], [1], [3]]:
-                    indices2 = indices if indices[0] != 3 else [2]
+                for indices in ([0], [1], [3]):
+                    minmax = indices[0] != 3
+                    indices2 = indices if minmax else [2]
+
                     total, chi, score, firsts, enough, enough2 = \
-                        self.calculate_fraud(digit, series, indices2, minmax=indices[0] != 3, subtract=True)
+                        self.calculate_fraud(digit, series, indices2, minmax=minmax, subtract=True)
                     self.log(
                         f"TS {i:2} {digit} {str(indices):5} {state_id} {total:3} {chi:6.2f} {str(score):5}"
                         f" {self.get_fraud(score, enough, enough2, 'X')} {firsts}")
@@ -237,8 +239,9 @@ class Antifraud:
                             # fraud
                             # increase the interval if total is too low
                             while 1:
+                                sub = series[start: end]
                                 total, chi, score, firsts, enough, enough2 = \
-                                    self.calculate_fraud(digit, series[start: end], indices, subtract=True)
+                                    self.calculate_fraud(digit, sub, indices2, minmax=minmax, subtract=True)
                                 if total < min_count and (start > 0 or end < length):
                                     if start > 0:
                                         start -= 1
@@ -281,7 +284,7 @@ class Antifraud:
                     if best >= 0.9:
                         fraud_data.extend(betas)
 
-            self.calculate_score(cands, fraud_data)
+            self.calculate_score(state_id, cands, fraud_data)
 
         # 3) finish + total + timestamp
         total = [0] * 9
@@ -335,14 +338,25 @@ class Antifraud:
                         dmax = datum[offset + 2] - a[offset + 2]
                         if d0 < 1 or dmin < 1 or dmax < 1:
                             continue
+
                         item = 0
                         sd0 = str(d0)
-                        dmin = str(dmin)
-                        dmax = str(dmax)
-                        if len(sd0) > bid and len(dmin) > bid and len(dmax) > bid:
-                            if dmin[bid] != sd0[bid] or dmax[bid] != sd0[bid]:
-                                continue
-                            item = d0
+                        ld0 = len(sd0)
+                        smin = str(dmin)
+                        lmin = len(smin)
+                        smax = str(dmax)
+                        lmax = len(smax)
+                        if ld0 <= bid or lmin <= bid or lmax <= bid or ld0 != lmin or ld0 != lmax:
+                            continue
+
+                        imin = min(d0, dmin, dmax)
+                        imax = max(d0, dmin, dmax)
+                        for i in range(10):
+                            x = imin + (imax - imin) * i / 9
+                            counts[int(str(x)[bid])] += 1
+
+                        total += 1
+                        continue
                     else:
                         a = prev[index * step] if index >= 0 else prev
                         item -= a
@@ -353,12 +367,12 @@ class Antifraud:
                 text = str(item)
 
                 if len(text) > bid:
-                    counts[int(text[bid])] += 1
+                    counts[int(text[bid])] += 10
                     total += 1
 
             prev = datum
 
-        counts = [counts[i] for i in range(10)]
+        counts = [int(counts[i] / 10 + 0.5) for i in range(10)]
         num_digit = 9 if benford_id == 1 else 10
 
         # 2) calculate chi-square
@@ -381,7 +395,7 @@ class Antifraud:
             print(expects)
         return total, chi, score, counts, enough, enough2
 
-    def calculate_score(self, cands: List[Any], data: List[Any]):
+    def calculate_score(self, state_id: str, cands: List[Any], data: List[Any]):
         """Calculate the final fraud score for presentation (colors)
         cands: [0, digit, indices, total, int(chi * 100) / 100, score, firsts]
         """
@@ -554,16 +568,38 @@ class Antifraud:
         if len(self.states) < 2:
             return
 
+        # 1) compare series
         keys = [key for key in self.states[0] if key != '00' and key in self.states[1]]
         for key in keys:
             self.compare_series(key)
-            # break
+
+        # 2) check how many corrections there were
+        for state_id, value in self.states[0].items():
+            if state_id == '00':
+                continue
+            diff = abs(value[0] - value[1])
+            error = 0
+            num_error = 0
+            prev = [0] * 8
+            total = value[3]
+
+            for serie in value[17]:
+                for i in (0, 3):
+                    delta = serie[i] - prev[i]
+                    if delta < 0:
+                        error -= delta
+                        num_error += 1
+                prev = serie
+
+            value[18] = int(error * 100 / diff * num_error / (num_error + 2) * 100) / 100 if diff > 0 else 0
+            # print(state_id, num_error, error, total, error * 100 / total, error * 100 / diff, value[18])
 
     def compare_series(self, state_id: str):
         """Compare 2 series
         """
-        s1 = self.states[0][state_id][17]
-        s2 = self.states[1][state_id][17]
+        states = self.states
+        s1 = states[0][state_id][17]
+        s2 = states[1][state_id][17]
         s3 = []
         num1 = len(s1)
         num2 = len(s2)
@@ -589,14 +625,14 @@ class Antifraud:
             s3.append(s2[j if j < num2 else num2 - 1])
             i += 1
 
-        self.states[1][state_id][17] = s3
+        states[1][state_id][17] = s3
 
     def convert_file(self, filename: str):
         """Convert an HTML to JSON
         """
         print(filename)
         text = read_text_safe(filename)
-        for regexp in [RE_SCRIPT_2012, RE_SCRIPT_2016, RE_SCRIPT_2020]:
+        for regexp in (RE_SCRIPT_2012, RE_SCRIPT_2016, RE_SCRIPT_2020):
             rematch = regexp.search(text)
             if rematch:
                 break
@@ -642,7 +678,7 @@ class Antifraud:
         return [
             0, 0, 0, 0,             # 0-3: D/R/L/* votes
             0, 0, 0, 0,             # 4-7: D/R/L/* absentees
-            0,                      # 8: fraud
+            0,                      # 8: benford fraud
             [0, 0, 0, 0],           # 9: fraud_chis
             [0, 0, 0, 0],           # 10: fraud_scores
             0,                      # 11: fraud %
@@ -652,6 +688,7 @@ class Antifraud:
             0,                      # 15: electoral
             ['', '', ''],           # 16: candidates
             [],                     # 17: time series
+            0,                      # 18: tab fraud
         ]
 
     def download_covid(self):
@@ -734,7 +771,7 @@ class Antifraud:
                         fraud_scores[digit - 1] = int(score * 100) / 100
                 fraud_data.append([0, digit, [2], total, ichi, score, firsts])
 
-            self.calculate_score(cands, fraud_data)
+            self.calculate_score('', cands, fraud_data)
             stats[code] = cands
 
         # 3) totals
